@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<meta name="theme-color" content="#f5f4f1">
+<title>Photos</title>
+<style>
+:root{color-scheme:light;--bg:#f5f4f1;--surface:#fff;--ink:#191919;--muted:#777;--line:#deddd9;--chip:#e8e7e3;--shadow:0 8px 28px #0000000d}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font-family:Roboto,"Arial",sans-serif}button{font:inherit;color:inherit;border:0;cursor:pointer}.app{max-width:900px;margin:auto;min-height:100dvh;padding:env(safe-area-inset-top) 18px calc(24px + env(safe-area-inset-bottom))}
+.top{display:flex;align-items:center;justify-content:space-between;padding:22px 2px 18px}.brand{font-size:29px;font-weight:650;letter-spacing:-1.2px}.sub{color:var(--muted);font-size:13px;margin-top:4px}.round{width:44px;height:44px;border-radius:50%;background:var(--chip);display:grid;place-items:center;font-size:21px}
+.tabs{display:flex;gap:8px;margin:6px 0 18px}.tab{border-radius:30px;padding:11px 18px;background:transparent;color:#555;font-size:14px}.tab.active{background:var(--ink);color:white}
+.tools{display:flex;align-items:center;justify-content:space-between;margin:0 2px 14px;color:var(--muted);font-size:13px}.toolbtn{background:transparent;padding:7px 0;font-size:14px;color:var(--ink)}
+.grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:5px}.tile{position:relative;aspect-ratio:1;background:#e5e4e0;border-radius:5px;overflow:hidden;padding:0}.tile img,.tile video{width:100%;height:100%;object-fit:cover;display:block}.tile .play{position:absolute;right:8px;top:8px;color:white;text-shadow:0 1px 5px #000;font-size:17px}.tile:active{opacity:.8}
+.empty{padding:70px 18px;text-align:center;color:var(--muted);grid-column:1/-1}.empty .symbol{font-size:44px;color:var(--ink);margin-bottom:14px}.empty h2{font-size:20px;color:var(--ink);margin:0 0 8px}.empty p{font-size:14px;line-height:1.5;margin:0 auto 20px;max-width:280px}.primary{background:var(--ink);color:#fff;border-radius:28px;padding:12px 20px}
+.viewer{position:fixed;inset:0;background:#111;z-index:5;display:none;align-items:center;justify-content:center}.viewer.show{display:flex}.viewer img,.viewer video{max-width:100%;max-height:100%;object-fit:contain}.close{position:absolute;top:calc(18px + env(safe-area-inset-top));left:18px;background:#333;color:white;border-radius:50%;width:44px;height:44px;font-size:23px;z-index:6}.caption{position:absolute;bottom:calc(20px + env(safe-area-inset-bottom));left:18px;right:18px;color:#fff;text-align:center;font-size:13px;opacity:.8}
+@media(min-width:600px){.app{padding-left:28px;padding-right:28px}.grid{grid-template-columns:repeat(4,minmax(0,1fr));gap:8px}.tile{border-radius:8px}}
+</style>
+</head>
+<body>
+<main class="app">
+<header class="top"><div><div class="brand">Photos</div><div class="sub" id="subtitle">Your moments, in one place</div></div><button class="round" aria-label="Refresh gallery" onclick="refreshGallery()">↻</button></header>
+<nav class="tabs"><button class="tab active" data-filter="all">All</button><button class="tab" data-filter="image">Photos</button><button class="tab" data-filter="video">Videos</button></nav>
+<div class="tools"><span id="count">Scanning your gallery…</span><button class="toolbtn" id="sortBtn" onclick="toggleSort()">Newest ↓</button></div>
+<section class="grid" id="grid"></section>
+</main>
+<div class="viewer" id="viewer" onclick="closeViewer()"><button class="close" aria-label="Close" onclick="event.stopPropagation();closeViewer()">×</button><div id="viewerContent" onclick="event.stopPropagation()"></div><div class="caption" id="caption"></div></div>
+<script>
+let media=[],filter='all',oldest=false;
+const grid=document.getElementById('grid');
+function escapeHtml(s){return String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
+function refreshGallery(){
+ if(!window.AndroidGallery){showEmpty('Open this inside the Photos Android app','The local media bridge is available in the native app.');return;}
+ if(!AndroidGallery.hasMediaPermission()){showEmpty('Allow access to your media','Photos needs media permission to show pictures and videos stored on this device.',true);document.getElementById('count').textContent='Permission needed';return;}
+ try{media=JSON.parse(AndroidGallery.getMedia()||'[]');render();}catch(e){showEmpty('Could not load your gallery','Try refreshing the gallery.');}
+}
+function showEmpty(title,desc,permission=false){grid.innerHTML=`<div class="empty"><div class="symbol">▧</div><h2>${escapeHtml(title)}</h2><p>${escapeHtml(desc)}</p>${permission?'<button class="primary" onclick="AndroidGallery.requestPermission()">Allow access</button>':''}</div>`;}
+function render(){
+ let items=media.filter(x=>filter==='all'||x.kind===filter).slice().sort((a,b)=>(oldest?1:-1)*(a.dateAdded-b.dateAdded));
+ document.getElementById('count').textContent=`${items.length} ${items.length===1?'item':'items'}`;
+ if(!items.length){showEmpty(filter==='video'?'No videos found':filter==='image'?'No photos found':'Your gallery is empty','Photos and videos on your device will appear here automatically.');return;}
+ grid.innerHTML=items.map((x,i)=>`<button class="tile" aria-label="${escapeHtml(x.name)}" onclick="openViewer(${media.indexOf(x)})">${x.kind==='video'?`<video src="${x.url}" preload="metadata" muted playsinline></video><span class="play">▶</span>`:`<img src="${x.url}" loading="${i<18?'eager':'lazy'}" alt="${escapeHtml(x.name)}">`}</button>`).join('');
+}
+function openViewer(index){const x=media[index];if(!x)return;const viewer=document.getElementById('viewer'),content=document.getElementById('viewerContent');content.innerHTML=x.kind==='video'?`<video src="${x.url}" controls autoplay playsinline style="max-width:100vw;max-height:100dvh"></video>`:`<img src="${x.url}" alt="${escapeHtml(x.name)}">`;document.getElementById('caption').textContent=x.name;viewer.classList.add('show');}
+function closeViewer(){document.getElementById('viewer').classList.remove('show');document.getElementById('viewerContent').innerHTML='';}
+function toggleSort(){oldest=!oldest;document.getElementById('sortBtn').textContent=oldest?'Oldest ↑':'Newest ↓';render();}
+document.querySelectorAll('.tab').forEach(b=>b.addEventListener('click',()=>{document.querySelectorAll('.tab').forEach(x=>x.classList.remove('active'));b.classList.add('active');filter=b.dataset.filter;render();}));
+window.refreshGallery=refreshGallery;
+setTimeout(refreshGallery,150);
+</script>
+</body>
+</html>
