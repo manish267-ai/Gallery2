@@ -1,0 +1,283 @@
+name: Build Android MediaStore Gallery APK
+
+on:
+  push:
+    branches: [ "main", "master" ]
+  workflow_dispatch:
+
+jobs:
+  build-apk:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+
+      - name: Generate Android Project Structure & Gradle Files
+        run: |
+          mkdir -p app/src/main/assets
+          mkdir -p app/src/main/java/com/example/mediastoregallery
+
+          # Copy index.html from root if placed in root folder
+          if [ -f "index.html" ]; then
+            cp index.html app/src/main/assets/index.html
+          fi
+
+          # Create settings.gradle
+          cat << 'EOF' > settings.gradle
+          pluginManagement {
+              repositories {
+                  google()
+                  mavenCentral()
+                  gradlePluginPortal()
+              }
+          }
+          dependencyResolutionManagement {
+              repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
+              repositories {
+                  google()
+                  mavenCentral()
+              }
+          }
+          rootProject.name = "MediaStoreGallery"
+          include ':app'
+          EOF
+
+          # Create root build.gradle
+          cat << 'EOF' > build.gradle
+          plugins {
+              id 'com.android.application' version '8.2.2' apply false
+              id 'org.jetbrains.kotlin.android' version '1.9.22' apply false
+          }
+          EOF
+
+          # Create gradle.properties
+          cat << 'EOF' > gradle.properties
+          android.useAndroidX=true
+          org.gradle.jvmargs=-Xmx2048m
+          EOF
+
+          # Create app/build.gradle
+          cat << 'EOF' > app/build.gradle
+          plugins {
+              id 'com.android.application'
+              id 'org.jetbrains.kotlin.android'
+          }
+
+          android {
+              namespace 'com.example.mediastoregallery'
+              compileSdk 34
+
+              defaultConfig {
+                  applicationId "com.example.mediastoregallery"
+                  minSdk 24
+                  targetSdk 34
+                  versionCode 1
+                  versionName "1.0"
+              }
+
+              buildTypes {
+                  debug {
+                      minifyEnabled false
+                  }
+              }
+              compileOptions {
+                  sourceCompatibility JavaVersion.VERSION_17
+                  targetCompatibility JavaVersion.VERSION_17
+              }
+              kotlinOptions {
+                  jvmTarget = '17'
+              }
+          }
+          EOF
+
+          # Create AndroidManifest.xml if not already uploaded
+          if [ ! -f "app/src/main/AndroidManifest.xml" ]; then
+          cat << 'EOF' > app/src/main/AndroidManifest.xml
+          <?xml version="1.0" encoding="utf-8"?>
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+              <uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />
+              <uses-permission android:name="android.permission.READ_MEDIA_VIDEO" />
+              <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" android:maxSdkVersion="32" />
+              <application
+                  android:allowBackup="true"
+                  android:label="MediaStore Gallery"
+                  android:supportsRtl="true"
+                  android:usesCleartextTraffic="true"
+                  android:theme="@android:style/Theme.DeviceDefault.NoActionBar">
+                  <activity
+                      android:name=".MainActivity"
+                      android:exported="true"
+                      android:configChanges="orientation|screenSize|keyboardHidden">
+                      <intent-filter>
+                          <action android:name="android.intent.action.MAIN" />
+                          <category android:name="android.intent.category.LAUNCHER" />
+                      </intent-filter>
+                  </activity>
+              </application>
+          </manifest>
+          EOF
+          fi
+
+          # Create MainActivity.kt if not already uploaded
+          if [ ! -f "app/src/main/java/com/example/mediastoregallery/MainActivity.kt" ]; then
+          cat << 'EOF' > app/src/main/java/com/example/mediastoregallery/MainActivity.kt
+          package com.example.mediastoregallery
+
+          import android.Manifest
+          import android.app.Activity
+          import android.content.ContentUris
+          import android.content.pm.PackageManager
+          import android.graphics.Bitmap
+          import android.os.Build
+          import android.os.Bundle
+          import android.provider.MediaStore
+          import android.util.Size
+          import android.webkit.*
+          import org.json.JSONArray
+          import org.json.JSONObject
+          import java.io.ByteArrayInputStream
+          import java.io.ByteArrayOutputStream
+
+          class MainActivity : Activity() {
+              private lateinit var webView: WebView
+              private val PERMISSION_REQUEST_CODE = 1001
+
+              override fun onCreate(savedInstanceState: Bundle?) {
+                  super.onCreate(savedInstanceState)
+                  window.statusBarColor = 0xFF0B0F17.toInt()
+                  window.navigationBarColor = 0xFF0B0F17.toInt()
+                  webView = WebView(this)
+                  setContentView(webView)
+                  webView.settings.apply {
+                      javaScriptEnabled = true
+                      domStorageEnabled = true
+                      allowFileAccess = true
+                      allowContentAccess = true
+                      mediaPlaybackRequiresUserGesture = false
+                  }
+                  webView.addJavascriptInterface(MediaStoreBridge(), "AndroidMediaStore")
+                  webView.webViewClient = object : WebViewClient() {
+                      override fun shouldInterceptRequest(view: WebView?, request: WebResourceRequest?): WebResourceResponse? {
+                          val url = request?.url ?: return null
+                          if (url.host == "mediastore.local") {
+                              return try {
+                                  val id = url.lastPathSegment?.toLong() ?: return null
+                                  val mime = url.getQueryParameter("type") ?: "image/jpeg"
+                                  val isThumb = url.getQueryParameter("thumb") == "1"
+                                  val baseUri = if (mime.startsWith("video")) MediaStore.Video.Media.EXTERNAL_CONTENT_URI else MediaStore.Images.Media.EXTERNAL_CONTENT_URI
+                                  val contentUri = ContentUris.withAppendedId(baseUri, id)
+                                  if (isThumb && Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                                      val bmp = contentResolver.loadThumbnail(contentUri, Size(400, 400), null)
+                                      val bos = ByteArrayOutputStream()
+                                      bmp.compress(Bitmap.CompressFormat.JPEG, 80, bos)
+                                      return WebResourceResponse("image/jpeg", "UTF-8", 200, "OK", mapOf("Access-Control-Allow-Origin" to "*"), ByteArrayInputStream(bos.toByteArray()))
+                                  }
+                                  val inputStream = contentResolver.openInputStream(contentUri)
+                                  WebResourceResponse(mime, "UTF-8", 200, "OK", mapOf("Access-Control-Allow-Origin" to "*"), inputStream)
+                              } catch (e: Exception) { null }
+                          }
+                          return super.shouldInterceptRequest(view, request)
+                      }
+                  }
+                  checkAndRequestPermissions()
+              }
+
+              private fun checkAndRequestPermissions() {
+                  val perms = if (Build.VERSION.SDK_INT >= 33) arrayOf(Manifest.permission.READ_MEDIA_IMAGES, Manifest.permission.READ_MEDIA_VIDEO) else arrayOf(Manifest.permission.READ_EXTERNAL_STORAGE)
+                  val missing = perms.filter { checkSelfPermission(it) != PackageManager.PERMISSION_GRANTED }
+                  if (missing.isNotEmpty()) requestPermissions(missing.toTypedArray(), PERMISSION_REQUEST_CODE)
+                  webView.loadUrl("file:///android_asset/index.html")
+              }
+
+              override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
+                  super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+                  if (requestCode == PERMISSION_REQUEST_CODE && grantResults.any { it == PackageManager.PERMISSION_GRANTED }) webView.reload()
+              }
+
+              override fun onBackPressed() {
+                  if (webView.canGoBack()) webView.goBack() else super.onBackPressed()
+              }
+
+              inner class MediaStoreBridge {
+                  @JavascriptInterface
+                  fun getAllMediaJson(): String {
+                      val jsonArray = JSONArray()
+                      val projection = arrayOf(
+                          MediaStore.Files.FileColumns._ID,
+                          MediaStore.Files.FileColumns.DISPLAY_NAME,
+                          MediaStore.Files.FileColumns.BUCKET_DISPLAY_NAME,
+                          MediaStore.Files.FileColumns.MIME_TYPE,
+                          MediaStore.Files.FileColumns.SIZE,
+                          MediaStore.Files.FileColumns.DATE_ADDED,
+                          MediaStore.Files.FileColumns.WIDTH,
+                          MediaStore.Files.FileColumns.HEIGHT,
+                          MediaStore.Video.VideoColumns.DURATION,
+                          MediaStore.Files.FileColumns.RELATIVE_PATH
+                      )
+                      val selection = "${MediaStore.Files.FileColumns.MEDIA_TYPE}=? OR ${MediaStore.Files.FileColumns.MEDIA_TYPE}=?"
+                      val selectionArgs = arrayOf(MediaStore.Files.FileColumns.MEDIA_TYPE_IMAGE.toString(), MediaStore.Files.FileColumns.MEDIA_TYPE_VIDEO.toString())
+                      val sortOrder = "${MediaStore.Files.FileColumns.DATE_ADDED} DESC"
+                      val queryUri = MediaStore.Files.getContentUri("external")
+                      try {
+                          contentResolver.query(queryUri, projection, selection, selectionArgs, sortOrder)?.use { cursor ->
+                              val idCol = cursor.getColumnIndexOrThrow(MediaStore.Files.FileColumns._ID)
+                              val nameCol = cursor.getColumnIndexOrThrow(MediaStore.Files.FileColumns.DISPLAY_NAME)
+                              val bucketCol = cursor.getColumnIndexOrThrow(MediaStore.Files.FileColumns.BUCKET_DISPLAY_NAME)
+                              val mimeCol = cursor.getColumnIndexOrThrow(MediaStore.Files.FileColumns.MIME_TYPE)
+                              val sizeCol = cursor.getColumnIndexOrThrow(MediaStore.Files.FileColumns.SIZE)
+                              val dateCol = cursor.getColumnIndexOrThrow(MediaStore.Files.FileColumns.DATE_ADDED)
+                              val widthCol = cursor.getColumnIndexOrThrow(MediaStore.Files.FileColumns.WIDTH)
+                              val heightCol = cursor.getColumnIndexOrThrow(MediaStore.Files.FileColumns.HEIGHT)
+                              val durCol = cursor.getColumnIndexOrThrow(MediaStore.Video.VideoColumns.DURATION)
+                              val pathCol = cursor.getColumnIndex(MediaStore.Files.FileColumns.RELATIVE_PATH)
+                              var count = 0
+                              while (cursor.moveToNext() && count < 2000) {
+                                  val id = cursor.getLong(idCol)
+                                  val mime = cursor.getString(mimeCol) ?: "image/jpeg"
+                                  val relPath = if (pathCol != -1) cursor.getString(pathCol) ?: "DCIM/" else "DCIM/"
+                                  val obj = JSONObject().apply {
+                                      put("_id", id)
+                                      put("display_name", cursor.getString(nameCol) ?: "Media_$id")
+                                      put("bucket_display_name", cursor.getString(bucketCol) ?: "Internal Storage")
+                                      put("mime_type", mime)
+                                      put("size", cursor.getLong(sizeCol))
+                                      put("date_added", cursor.getLong(dateCol))
+                                      put("width", cursor.getInt(widthCol))
+                                      put("height", cursor.getInt(heightCol))
+                                      put("duration", cursor.getLong(durCol) / 1000.0)
+                                      put("relative_path", relPath)
+                                      put("uri", "https://mediastore.local/$id?type=$mime")
+                                      put("thumb_uri", "https://mediastore.local/$id?type=$mime&thumb=1")
+                                  }
+                                  jsonArray.put(obj)
+                                  count++
+                              }
+                          }
+                      } catch (e: Exception) { e.printStackTrace() }
+                      return jsonArray.toString()
+                  }
+              }
+          }
+          EOF
+          fi
+
+      - name: Setup Gradle & Build Debug APK
+        uses: gradle/actions/setup-gradle@v3
+        with:
+          gradle-version: '8.5'
+
+      - name: Assemble Debug APK
+        run: gradle assembleDebug --no-daemon
+
+      - name: Upload Ready-to-Install APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: MediaStore-Gallery-APK
+          path: app/build/outputs/apk/debug/app-debug.apk
